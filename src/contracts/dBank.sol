@@ -4,71 +4,115 @@ pragma solidity >=0.6.0 <0.8.0;
 import "./Token.sol";
 
 contract dBank {
+    Token private token;
 
-  //assign Token contract to variable
+    mapping(address => uint256) public depositStart;
+    mapping(address => uint256) public etherBalanceOf;
+    mapping(address => uint256) public collateralEther;
 
-  //add mappings
+    mapping(address => bool) public isDeposited;
+    mapping(address => bool) public isBorrowed;
 
-  //add events
+    event Deposit(address indexed user, uint256 etherAmount, uint256 timeStart);
+    event Withdraw(
+        address indexed user,
+        uint256 etherAmount,
+        uint256 depositTime,
+        uint256 interest
+    );
+    event Borrow(
+        address indexed user,
+        uint256 collateralEtherAmount,
+        uint256 borrowedTokenAmount
+    );
+    event PayOff(address indexed user, uint256 fee);
 
-  //pass as constructor argument deployed Token contract
-  constructor() public {
-    //assign token deployed contract to variable
-  }
+    constructor(Token _token) public {
+        token = _token;
+    }
 
-  function deposit() payable public {
-    //check if msg.sender didn't already deposited funds
-    //check if msg.value is >= than 0.01 ETH
+    function deposit() public payable {
+        require(
+            isDeposited[msg.sender] == false,
+            "Error, deposit already active"
+        );
+        require(msg.value >= 1e16, "Error, deposit must be >= 0.01 ETH");
+        
+        etherBalanceOf[msg.sender] = etherBalanceOf[msg.sender] + msg.value;
+        depositStart[msg.sender] = depositStart[msg.sender] + block.timestamp;
 
-    //increase msg.sender ether deposit balance
-    //start msg.sender hodling time
+        isDeposited[msg.sender] = true; //activate deposit status
+        emit Deposit(msg.sender, msg.value, block.timestamp);
+    }
 
-    //set msg.sender deposit status to true
-    //emit Deposit event
-  }
+    function withdraw() public {
+        require(isDeposited[msg.sender] == true, "Error, no previous deposit");
+        uint256 userBalance = etherBalanceOf[msg.sender]; //for event
 
-  function withdraw() public {
-    //check if msg.sender deposit status is true
-    //assign msg.sender ether deposit balance to variable for event
+        //check user's hodl time
+        uint256 depositTime = block.timestamp - depositStart[msg.sender];
 
-    //check user's hodl time
+        //31668017 - interest(10% APY) per second for min. deposit amount (0.01 ETH), cuz:
+        //1e15(10% of 0.01 ETH) / 31577600 (seconds in 365.25 days)
 
-    //calc interest per second
-    //calc accrued interest
+        //(etherBalanceOf[msg.sender] / 1e16) - calc. how much higher interest will be (based on deposit), e.g.:
+        //for min. deposit (0.01 ETH), (etherBalanceOf[msg.sender] / 1e16) = 1 (the same, 31668017/s)
+        //for deposit 0.02 ETH, (etherBalanceOf[msg.sender] / 1e16) = 2 (doubled, (2*31668017)/s)
+        uint256 interestPerSecond = 31668017 *
+            (etherBalanceOf[msg.sender] / 1e16);
+        uint256 interest = interestPerSecond * depositTime;
 
-    //send eth to user
-    //send interest in tokens to user
+        //send funds to user
+        msg.sender.transfer(userBalance); //eth back to user
+        token.mint(msg.sender, interest); //interest to user
 
-    //reset depositer data
+        //reset depositer data
+        depositStart[msg.sender] = 0;
+        etherBalanceOf[msg.sender] = 0;
+        isDeposited[msg.sender] = false;
 
-    //emit event
-  }
+        emit Withdraw(msg.sender, userBalance, depositTime, interest);
+    }
 
-  function borrow() payable public {
-    //check if collateral is >= than 0.01 ETH
-    //check if user doesn't have active loan
+    function borrow() public payable {
+        require(msg.value >= 1e16, "Error, collateral must be >= 0.01 ETH");
+        require(isBorrowed[msg.sender] == false, "Error, loan already taken");
 
-    //add msg.value to ether collateral
+        //this Ether will be locked till user payOff the loan
+        collateralEther[msg.sender] = collateralEther[msg.sender] + msg.value;
 
-    //calc tokens amount to mint, 50% of msg.value
+        //calc tokens amount to mint, 50% of msg.value
+        uint256 tokensToMint = collateralEther[msg.sender] / 2;
 
-    //mint&send tokens to user
+        //mint&send tokens to user
+        token.mint(msg.sender, tokensToMint);
 
-    //activate borrower's loan status
+        //activate borrower's loan status
+        isBorrowed[msg.sender] = true;
 
-    //emit event
-  }
+        emit Borrow(msg.sender, collateralEther[msg.sender], tokensToMint);
+    }
 
-  function payOff() public {
-    //check if loan is active
-    //transfer tokens from user back to the contract
+    function payOff() public {
+        require(isBorrowed[msg.sender] == true, "Error, loan not active");
+        require(
+            token.transferFrom(
+                msg.sender,
+                address(this),
+                collateralEther[msg.sender] / 2
+            ),
+            "Error, can't receive tokens"
+        ); //must approve dBank 1st
 
-    //calc fee
+        uint256 fee = collateralEther[msg.sender] / 10; //calc 10% fee
 
-    //send user's collateral minus fee
+        //send user's collateral minus fee
+        msg.sender.transfer(collateralEther[msg.sender] - fee);
 
-    //reset borrower's data
+        //reset borrower's data
+        collateralEther[msg.sender] = 0;
+        isBorrowed[msg.sender] = false;
 
-    //emit event
-  }
+        emit PayOff(msg.sender, fee);
+    }
 }
